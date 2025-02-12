@@ -9,8 +9,6 @@ from pixell import lensing, curvedsky
 import matplotlib.pyplot as plt
 from os.path import join as opj
 import pickle
-import solenspipe
-from cmbsky import norm_qtt_asym, norm_xtt_asym
 from scipy.signal import savgol_filter
 
 try:
@@ -22,29 +20,6 @@ try:
 except KeyError:
     SEHGAL_DIR="/global/project/projectdirs/act/data/maccrann/sehgal"
 
-#This can do strange things at low l
-"""
-def get_cl_fg_smooth(alms, alm2=None):
-    cl = curvedsky.alm2cl(alms, alm2=alm2)
-    l = np.arange(len(cl))
-    d = l*(l+1)*cl
-    #smooth with savgol
-    d_smooth = savgol_filter(d, 5, 2)
-    #if there's still negative values, set them
-    #to zero
-    d_smooth[d_smooth<0.] = 0.
-    return np.where(
-        l>0,d_smooth/l/(l+1),0.)    
-"""
-
-def get_cl_smooth(alm1, alm2=None, n=5):
-    if alm2 is None:
-        alm2=alm1
-    cl = curvedsky.alm2cl(alm1, alm2)
-    window = np.ones(int(n))/float(n)
-    cl_out = np.convolve(cl, window, mode="same")
-    cl_out[-n:] = cl[-n:]
-    return cl_out
 
 def filter_T(T_alm, cltot, lmin, lmax):
     """                                                                                                                                                                                                    
@@ -113,7 +88,7 @@ def norm_xtt_asym(est,lmax,glmin,glmax,llmin,llmax,rlmax,
     if ((est=="lenssrc") and (profile is not None)):
         r = norm_general.xtt_asym(est,lmax,glmin,glmax,llmin,llmax,rlmax,
                                   TT, OCTG/(profile[:llmax+1]), OCTL/(profile[:llmax+1]), gtype=gtype)
-        return r/profile
+        return r/profile 
     
     elif ((est=="srclens") and (profile is not None)):
         r = norm_general.xtt_asym(est,lmax,glmin,glmax,llmin,llmax,rlmax,
@@ -143,111 +118,6 @@ def norm_xtt_asym(est,lmax,glmin,glmax,llmin,llmax,rlmax,
         return norm_general.xtt_asym(est,lmax,glmin,glmax,llmin,llmax,rlmax,
                                      TT, OCTG, OCTL, gtype=gtype)
 
-def setup_asym_recon(px, lmin, lmax, mlmax,
-                      cl_rksz, tcls_X, tcls_Y,
-                      tcls_XY, do_lh=False,
-                      do_psh=False):
-
-    outputs = {}
-    #CMB theory for filters
-    ucls,_ = futils.get_theory_dicts(grad=True,
-                                    lmax=mlmax)
-    outputs["ucls"] = ucls
-    #Get qfunc and normalization
-    #profile is Cl**0.5
-    profile = cl_rksz**0.5
-    outputs["profile"] = profile
-
-    def filter_X(X):
-        return filter_T(X, cltot_X, lmin, lmax)
-    outputs["filter_X"] = filter_X
-    def filter_Y(Y):
-        return filter_T(Y, cltot_Y, lmin, lmax)
-    outputs["filter_Y"] = filter_Y
-
-    print(tcls_X, tcls_Y, tcls_XY)
-    cltot_X, cltot_Y, cltot_XY = (
-        tcls_X[:lmax+1], tcls_Y[:lmax+1], tcls_XY[:lmax+1]
-        )
-
-    norm_args_XY = (mlmax, lmin, lmax, lmin,
-        lmax, lmax, ucls['TT'][:lmax+1], cltot_Y,
-        cltot_X)
-    norm_phi_XY = norm_general.qtt_asym("lens", *norm_args_XY)
-
-    outputs["norm_phi_XY"] = norm_phi_XY
-    norm_K_XY = norm_qtt_asym(
-        "src", *norm_args_XY, profile=profile)[0] #I think this should be the same as YX?
-    outputs["norm_K_XY"] = norm_K_XY
-
-    print("getting qe N0s")
-    #Now get the N0s (need these for constructing
-    #symmetrized estimator)
-    #Note these are the noise on the *unnormalized*
-    #estimators
-    """
-    wL_X = 1./cltot_X
-    wL_Y = 1./cltot_Y
-    wGK_X = (1./cltot_X[:lmax+1])/2
-    wGK_Y = (1./cltot_Y[:lmax+1])/2
-    """
-    wLK_X = profile[:lmax+1]/cltot_X
-    wLK_Y = profile[:lmax+1]/cltot_Y
-    wGK_X = profile[:lmax+1]/cltot_X[:lmax+1]/2
-    wGK_Y = profile[:lmax+1]/cltot_Y[:lmax+1]/2
-
-    N0_XYXY_K_nonorm = noise_spec.qtt_asym(
-        'src', mlmax, lmin, lmax,
-         wLK_X, wGK_Y, wLK_X, wGK_Y,
-         cltot_X,cltot_Y,cltot_XY,cltot_XY)[0]/profile**2
-    
-    #Normalize the N0
-    N0_XYXY_K = N0_XYXY_K_nonorm * norm_K_XY**2
-
-    outputs["N0_XYXY_K"] = N0_XYXY_K
-
-    print("getting qe fg_trispectrum functions")
-    #Also will be useful to define here functions to get the
-    #tripsectrum N0 for foregrounds. 
-    def get_fg_trispectrum_N0_XYXY(clfg_X, clfg_Y, clfg_XY):
-        N0_tri_XYXY_prof_nonorm = noise_spec.qtt_asym(
-            "src", mlmax,lmin,lmax,
-            wLK_X, wGK_Y, wLK_X, wGK_Y,
-            clfg_X[:lmax+1], clfg_Y[:lmax+1],
-            clfg_XY[:lmax+1], clfg_XY[:lmax+1])[0]
-        print(N0_tri_XYXY_prof_nonorm.shape)
-        N0_tri_XYXY_prof_nonorm /= profile**2
-        N0_tri_XYXY_prof = (
-            N0_tri_XYXY_prof_nonorm
-            *norm_K_XY*norm_K_XY)
-
-        return N0_tri_XYXY_prof
-    outputs["get_fg_trispectrum_N0_XYXY"] = get_fg_trispectrum_N0_XYXY
-
-    #Ok, so we have norms and N0s
-    #Now the qfuncs
-    print("getting XY and YX qfuncs for qe")
-    def get_XY_filtered(X_filtered, Y_filtered, 
-                        X_nofilter=None, Y_nofilter=None):
-        if X_filtered is None:
-            X_filtered = filter_X(X_nofilter)
-            Y_filtered = filter_Y(Y_nofilter)
-        else:
-            assert X_filtered is not None
-            assert Y_filtered is not None
-            assert Y_nofilter is None
-        return X_filtered, Y_filtered
-        #Now we can define the qfuncs                                                                                                                      
-    def qfunc_K_XY(X_filtered, Y_filtered):
-        K_nonorm = qe.qe_source(
-            px, mlmax, X_filtered,
-            xfTalm=Y_filtered, profile=profile)
-        #and normalize                                                                                                                                 
-        return curvedsky.almxfl(K_nonorm, norm_K_XY)
-    outputs["qfunc_K_XY"] = qfunc_K_XY
-    outputs["qfunc_K_XY_incfilter"] = lambda X,Y: qfunc_K_XY(filter_X(X), filter_Y(Y))
-    
-    return outputs
 
 
 def get_N0_matrix_bh(
@@ -294,12 +164,25 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
     #Get qfunc and normalization
     #profile is Cl**0.5
     profile = cl_rksz**0.5
-    profile[:lmin] = profile[lmin] #funny things can happen with noisy Cls at low l
+    try:
+        assert np.all(np.isfinite(profile))
+    except AssertionError as e:
+        print("there is probably negative values in cl_rksz, which messes up the profile")
+        print("and thus the filtering - please check and provide a cl_rksz with zero or")
+        print("positive values")
+        raise(e)
+    #profile[:lmin] = profile[lmin] #funny things can happen with noisy Cls at low l
     outputs["profile"] = profile
 
     outputs["lmin"] = lmin
     outputs["lmax"] = lmax
     outputs["mlmax"] = mlmax
+    try:
+        assert mlmax>=lmax
+    except AssertionError as e:
+        print("mlmax must be >= lmax")
+        raise(e)
+    
     
     #also save all the total cls
     outputs["cltot_A"] = cltot_A
@@ -334,6 +217,8 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
 
     norm_K_AB = norm_qtt_asym(
         "src", *norm_args_AB, profile=profile)[0]
+    if divide_by_2uL:
+        norm_K_AB /= 2*profile
     norm_phi_AB = norm_qtt_asym(
         "lens", *norm_args_AB)
     norm_src_AB = norm_qtt_asym(
@@ -348,7 +233,10 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
         cltot_C[:lmax+1])
 
     norm_K_CD = norm_qtt_asym(
-        "src", *norm_args_CD, profile=profile)[0] #I think this should be the same as YX?
+        "src", *norm_args_CD, profile=profile)[0]
+    if divide_by_2uL:
+        norm_K_CD /= 2*profile
+        
     norm_phi_CD = norm_qtt_asym(
         "lens", *norm_args_CD)
     norm_src_CD = norm_qtt_asym(
@@ -370,8 +258,8 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
     """
     wLK_A = profile[:lmax+1]/cltot_A[:lmax+1]
     wLK_C = profile[:lmax+1]/cltot_C[:lmax+1]
-    wGK_D = profile[:lmax+1]/cltot_D[:lmax+1]/2
-    wGK_B = profile[:lmax+1]/cltot_B[:lmax+1]/2
+    wGK_D = profile[:lmax+1]/cltot_D[:lmax+1]
+    wGK_B = profile[:lmax+1]/cltot_B[:lmax+1]
 
     N0_ABCD_K_nonorm = noise_spec.qtt_asym(
         'src', mlmax, lmin, lmax,
@@ -416,8 +304,8 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
     if do_psh:
         wLs_A = 1./cltot_A[:lmax+1]
         wLs_C = 1./cltot_C[:lmax+1]
-        wGs_D = 1./cltot_D[:lmax+1]/2
-        wGs_B = 1./cltot_B[:lmax+1]/2
+        wGs_D = 1./cltot_D[:lmax+1]
+        wGs_B = 1./cltot_B[:lmax+1]
         N0_ABCD_src_nonorm = noise_spec.qtt_asym(
             'src', mlmax, lmin, lmax,
             wLs_A, wGs_B, wLs_C, wGs_D,
@@ -466,22 +354,22 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
             px, mlmax, A_filtered,
             xfTalm=B_filtered, profile=profile)
         #and normalize
-        if divide_by_2uL:
-            raise ValueError("not yet implemeneted divide_by_2uL")
-            norm = norm_K_AB / 2 / profile
-        else:
-            norm = norm_K_AB
-        return curvedsky.almxfl(K_nonorm, norm)
+        #if divide_by_2uL:
+        #    raise ValueError("not yet implemeneted divide_by_2uL")
+        #    norm = norm_K_AB / 2 / profile
+        #else:
+        #    norm = norm_K_AB
+        return curvedsky.almxfl(K_nonorm, norm_K_AB)
 
     def qfunc_K_CD(C_filtered, D_filtered):
         K_nonorm = qe.qe_source(
             px, mlmax, C_filtered,
             xfTalm=D_filtered, profile=profile)
         #and normalize                                                                                                             
-        if divide_by_2uL:
-            norm = norm_K_CD / 2 / profile
-        else:
-            norm = norm_K_CD
+        #if divide_by_2uL:
+        #    norm = norm_K_CD / 2 / profile
+        #else:
+        #    norm = norm_K_CD
         return curvedsky.almxfl(K_nonorm, norm_K_CD)
 
     outputs["qfunc_K_AB"] = qfunc_K_AB
@@ -543,7 +431,7 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
             cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])/profile
         N0_ABCD_K_phi = (
             N0_ABCD_K_phi_nonorm
-            *norm_K_AB*norm_phi_CD[0]*1)  #factor 2 because apparently don't need 1/2 in wGs
+            *norm_K_AB*norm_phi_CD[0])/2  #factor 2 because apparently don't need 1/2 in wGs
         
         N0_ABCD_phi_K_nonorm = noise_spec.xtt_asym(
             "lenssrc", mlmax,lmin,lmax,
@@ -551,11 +439,13 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
             cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])/profile
         N0_ABCD_phi_K = (
             N0_ABCD_phi_K_nonorm
-            *norm_phi_AB[0]*norm_K_CD*1)  #factor 2 because apparently don't need 1/2 in wGs
+            *norm_phi_AB[0]*norm_K_CD)/2  #factor 2 because apparently don't need 1/2 in wGs
 
         N0_ABCD_K_lh = get_N0_matrix_bh(
             N0_ABCD_K, N0_ABCD_K_phi, N0_ABCD_phi_K, N0_ABCD_phi[0],
             R_matrix_AB_inv_phi, R_matrix_CD_inv_phi)[:,0,0]
+        outputs["N0_ABCD_K_phi"] = N0_ABCD_K_phi
+        outputs["N0_ABCD_phi_K"] = N0_ABCD_phi_K
         outputs["N0_ABCD_K_lh"] = N0_ABCD_K_lh
 
         def get_fg_trispectrum_N0_ABCD_lh(clfg_AC, clfg_BD, clfg_AD, clfg_BC):
@@ -576,7 +466,7 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
                 wLK_A, wGK_B, wLphi_C, wGphi_D,
                 clfg_AC[:lmax+1], clfg_BD[:lmax+1], clfg_AD[:lmax+1], clfg_BC[:lmax+1])/profile
             N0_tri_ABCD_K_phi = (
-                N0_tri_ABCD_K_phi_nonorm * norm_K_AB * norm_phi_CD[0]*1 #factor 2 because apparently don't need 1/2 in wGs 
+                N0_tri_ABCD_K_phi_nonorm * norm_K_AB * norm_phi_CD[0]/2 #factor 2 because apparently don't need 1/2 in wGs 
                 )
             
             N0_tri_ABCD_phi_K_nonorm = noise_spec.xtt_asym(
@@ -585,7 +475,7 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
                 clfg_AC[:lmax+1], clfg_BD[:lmax+1], clfg_AD[:lmax+1], clfg_BC[:lmax+1])/profile
             N0_tri_ABCD_phi_K = (
                 N0_tri_ABCD_phi_K_nonorm
-                *norm_phi_AB[0]*norm_K_CD*1)	#factor 2 because apparently don't need 1/2 in wGs
+                *norm_phi_AB[0]*norm_K_CD)/2 #factor 2 because apparently don't need 1/2 in wGs
 
 
             #N0_tri_ABCD_phi_nonorm = noise_spec.qtt_asym(
@@ -730,12 +620,17 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
     return outputs
     
 
-def setup_recon(px, lmin, lmax, mlmax,
-                cl_rksz, tcls_X, tcls_Y=None,
-                tcls_XY=None, do_lh=False,
-                do_psh=False):
+def setup_recon_simple(px, lmin, lmax, mlmax,
+                cl_rksz, cltot, do_lh=False,
+                do_psh=False, divide_by_2uL=False):
 
     outputs = {}
+
+    try:
+        assert mlmax>=lmax
+    except AssertionError as e:
+        print("mlmax must be >= lmax")
+        raise(e)
     
     #CMB theory for filters
     ucls,_ = futils.get_theory_dicts(grad=True,
@@ -744,115 +639,110 @@ def setup_recon(px, lmin, lmax, mlmax,
     #Get qfunc and normalization
     #profile is Cl**0.5
     profile = cl_rksz**0.5
+    try:
+        assert np.all(np.isfinite(profile))
+    except AssertionError as e:
+        print("there is probably negative values in cl_rksz, which messes up the profile")
+        print("and thus the filtering - please check and provide a cl_rksz with zero or")
+        print("positive values")
+        raise(e)
+    #profile[:lmin] = profile[lmin]
     outputs["profile"] = profile
 
-    def filter_X(X):
-        return filter_T(X, tcls_X["TT"], lmin, lmax)
-    outputs["filter_X"] = filter_X
-    """
-    def filter_alms_X(alms):
-        if len(alms)!=3:
-            alms = dummy_teb(alms)
-        alms_filtered = futils.isotropic_filter(alms,
-                tcls_X, lmin, lmax, ignore_te=True)
-        return alms_filtered
-    outputs["filter_alms_X"] = filter_alms_X
-    """
+    def filt(X):
+        return filter_T(X, cltot, lmin, lmax)
+    outputs["filter"] = filt
     
-    if tcls_Y is None:
-        norm_K = pytempura.get_norms(
-            ['src'], ucls, tcls_X,
+    norm_K = pytempura.get_norms(
+        ['src'], ucls, ucls, {"TT" : cltot},
+        lmin, lmax, k_ellmax=mlmax,
+        profile=profile)['src']
+    N0_K = norm_K.copy()
+    #norm_K[0]=0.       
+    if divide_by_2uL:
+        norm_K /= 2*profile
+        N0_K /= (2*profile)**2
+    outputs["norm_K"] = norm_K
+    outputs["N0_K"] = N0_K
+    
+    #The Smith and Ferraro estimator Ksf differs
+    #slightly from our profile estimator, K
+    #Ksf = 2*profile*K (both unnormalised)
+    #So normalizations should be related via:
+    norm_Ksf = norm_K / 2 / profile
+    outputs["norm_Ksf"] = norm_Ksf
+
+    #For the normalized estimator this
+    #is also the N0.
+    #N0_K = norm_K 
+    #outputs["N0_K"] = N0_K 
+
+    #unnormalized source estimator
+    def qfunc_prof(X, Y):
+        return qe.qe_source(px,mlmax,profile=profile,
+                         fTalm=Y,xfTalm=X)
+
+    #Smith/Ferraro estimator (x 2!)
+    def qfunc_Ksf_nonorm(X,Y):
+        s_nonorm = qfunc_prof(X, Y)
+        K_nonorm = curvedsky.almxfl(s_nonorm, norm_Ksf)
+        return K_nonorm
+
+    def qfunc_K(X,Y):
+        K_nonorm = qfunc_prof(X,Y)
+        return curvedsky.almxfl(
+            K_nonorm, norm_K
+            )
+    outputs["qfunc_K"] = qfunc_K
+    qfunc_K_incfilter = lambda X,Y: qfunc_K(filter_alms_X(X)[0],
+                                            filter_alms_X(Y)[0])
+    outputs["qfunc_K_incfilter"] = qfunc_K_incfilter
+
+    def get_fg_trispectrum_K_N0(cl_fg):
+        #N0 is (A^K)^2 / A_fg (see eqn. 9 of 1310.7023
+        #for the normal estimator, and a bit more complex for
+        #the bias hardened case
+        Ctot = cltot**2 / cl_fg
+        norm_fg = pytempura.get_norms(
+            ['src'], ucls, ucls, {"TT" : Ctot},
             lmin, lmax, k_ellmax=mlmax,
             profile=profile)['src']
-        norm_K[0]=0.
-        norm_qtt_asym
-        outputs["norm_K"] = norm_K
 
-        #The Smith and Ferraro estimator Ksf differs
-        #slightly from our profile estimator,K
-        #Ksf = 2*profile*K (both unnormalised)
-        #So normalizations should be related via:
-        norm_Ksf = norm_K / 2 / profile
-        outputs["norm_Ksf"] = norm_Ksf
+        N0_tri = N0_K**2 / norm_fg
+        if divide_by_2uL:
+            #we should just be multiplying this by 1/(2*profile)**2
+            #but we already divided N0_K by 1/(2*profile)**2. So we 
+            #need to multiply by (2*profile)**2 to get the correct thing
+            N0_tri *= (2*profile)**2
 
-        #For the normalized estimator this
-        #is also the N0.
-        N0_K = norm_K / profile**2
-        outputs["N0_K"] = N0_K 
-        
-        #otherwise, it is
-        N0_K_nonorm = 1./norm_K
+        return N0_tri
+            
+    outputs["get_fg_trispectrum_K_N0"] = get_fg_trispectrum_K_N0
 
-        print('getting point-source norm')
-        print(np.any(tcls_X['TT']==0.))
-        print(np.any(~np.isfinite(tcls_X['TT'])))
-        norm_ps = pytempura.get_norms(
-            ['src'], ucls, tcls_X,
-            lmin, lmax, k_ellmax=mlmax)['src']
-        outputs["norm_ps"] = norm_ps
-
+    if do_lh:
         #Also get lensing norms and cross-response for
         #lensing hardening
         print('getting lensing norm')
         norm_phi = pytempura.norm_lens.qtt(
-            mlmax, lmin, lmax, ucls['TT'],
-            tcls_X['TT'], gtype='')[0]
+            mlmax, lmin, lmax, ucls['TT'], ucls["TT"],
+            cltot, gtype='')[0]
         outputs["norm_phi"] = norm_phi
 
         print('getting source-lens response')
-        print(tcls_X['TT'])
-        print(profile)
         R_K_phi = pytempura.get_cross(
-            'SRC','TT', ucls, tcls_X,
+            'SRC','TT', ucls, {"TT" : cltot},
             lmin, lmax, k_ellmax=mlmax,
             profile=profile)
         outputs["R_K_phi"] = R_K_phi
 
-        print('getting source-point-source response')
-        R_K_ps = (1./pytempura.get_norms(
-            ['src'], ucls, tcls_X,
-            lmin, lmax, k_ellmax=mlmax,
-            profile = profile**0.5)['src'])
-        R_K_ps[0] = 0.
-        outputs["R_K_ps"] = R_K_ps
-
-        #unnormalized source estimator
-        def qfunc_prof(X, Y):
-            return qe.qe_source(px,mlmax,profile=profile,
-                             fTalm=Y,xfTalm=X)
-
-        #Smith/Ferraro estimator (x 2!)
-        def qfunc_Ksf_nonorm(X,Y):
-            s_nonorm = qfunc_prof(X, Y)
-            K_nonorm = curvedsky.almxfl(s_nonorm, norm_Ksf)
-            return K_nonorm
-
-        def qfunc_K(X,Y):
-            K_nonorm = qfunc_prof(X,Y)
-            return curvedsky.almxfl(
-                K_nonorm, norm_K
-                )
-        outputs["qfunc_K"] = qfunc_K
-        qfunc_K_incfilter = lambda X,Y: qfunc_K(filter_alms_X(X)[0],
-                                                filter_alms_X(Y)[0])
-        outputs["qfunc_K_incfilter"] = qfunc_K_incfilter
-
-        def get_fg_trispectrum_K_N0(cl_fg):
-            #N0 is (A^K)^2 / A_fg (see eqn. 9 of 1310.7023
-            #for the normal estimator, and a bit more complex for
-            #the bias hardened case
-            Ctot = tcls_X['TT']**2 / cl_fg
-            norm_fg = pytempura.get_norms(
-                ['src'], ucls, {"TT" : Ctot},
-                lmin, lmax, k_ellmax=mlmax,
-                profile=profile)['src']
-            
-            return N0_K**2 / norm_fg
-        outputs["get_fg_trispectrum_K_N0"] = get_fg_trispectrum_K_N0
-
         #qfunc for lensing
-        qfunc_phi_nonorm = lambda X,Y: qe.qe_all(
-            px,ucls,mlmax,fTalm=Y,fEalm=None,fBalm=None,
+        def qfunc_phi_nonorm(X, Y):
+            print("type(X), type(Y)")
+            print(type(X), type(Y))
+            print("X.shape, Y.shape")
+            print(X.shape, Y.shape)
+            return qe.qe_all(
+            px, ucls, mlmax,fTalm=Y, fEalm=None, fBalm=None,
             estimators=['TT'], xfTalm=X, xfEalm=None,
             xfBalm=None)['TT']
 
@@ -860,7 +750,7 @@ def setup_recon(px, lmin, lmax, mlmax,
             phi = qfunc_phi_nonorm(X,Y)
             return curvedsky.almxfl(phi[0], norm_phi)
         outputs["qfunc_phi"] = qfunc_phi
-        
+
         def qfunc_lh(X,Y):
             #(K_est  )  = ( 1       A^K R^K\phi )(K   )
             #(\phi_est)    ( A^\phi R^K\phi    1 )(\phi)
@@ -879,17 +769,18 @@ def setup_recon(px, lmin, lmax, mlmax,
                                                   filter_alms_X(Y))
         outputs["qfunc_lh_incfilter"] = qfunc_lh_incfilter
 
-        
+
         N0_K_lh = N0_K / (1 - norm_K * norm_phi * R_K_phi**2)
         outputs["N0_K_lh"] = N0_K_lh
+
         def get_fg_trispectrum_K_N0_lh(cl_fg):
-            Ctot = tcls_X['TT']**2 / cl_fg
+            Ctot = cltot**2 / cl_fg
             norm_fg = pytempura.get_norms(
-                ['src'], ucls, {"TT" : Ctot},
+                ['src'], ucls, ucls, {"TT" : Ctot},
                 lmin, lmax, k_ellmax=mlmax,
                 profile=profile)['src']
             norm_phi_fg = pytempura.get_norms(
-                ['TT'], ucls, {'TT':Ctot},
+                ['TT'], ucls, ucls, {'TT':Ctot},
                 lmin, lmax,
                 k_ellmax=mlmax)['TT'][0]
             R_K_phi_fg = pytempura.get_cross(
@@ -897,13 +788,32 @@ def setup_recon(px, lmin, lmax, mlmax,
                 lmin, lmax,
                 k_ellmax=mlmax, profile=profile)
             N0 = N0_K**2/norm_fg
+            if divide_by_2uL:
+                N0 *= (2*profile)**2
             N0_phi = norm_phi**2/norm_phi_fg
             N0_tri = (N0 + R_K_phi**2 * norm_K**2 * N0_phi
                       - 2 * R_K_phi * norm_K**2 * norm_phi * R_K_phi_fg)
             N0_tri /= (1 - norm_K*norm_phi*R_K_phi**2)**2 
             return N0_tri
         outputs["get_fg_trispectrum_K_N0_lh"] = get_fg_trispectrum_K_N0_lh
-        
+
+    if do_psh:
+        print('getting point-source norm')
+        #print(np.any(tcls['TT']==0.))
+        #print(np.any(~np.isfinite(tcls['TT'])))
+        norm_ps = pytempura.get_norms(
+            ['src'], ucls, ucls, {"TT" : cltot},
+            lmin, lmax, k_ellmax=mlmax)['src']
+        outputs["norm_ps"] = norm_ps
+
+        print('getting source-point-source response')
+        R_K_ps = (1./pytempura.get_norms(
+            ['src'], ucls, ucls, {"TT" : cltot},
+            lmin, lmax, k_ellmax=mlmax,
+            profile = profile**0.5)['src'])
+        R_K_ps[0] = 0.
+        outputs["R_K_ps"] = R_K_ps
+
         def qfunc_ps_nonorm(X,Y):
             return qe.qe_source(px, mlmax,
                                 fTalm=Y,xfTalm=X)
@@ -923,7 +833,7 @@ def setup_recon(px, lmin, lmax, mlmax,
             denom = 1 - norm_K * norm_ps * R_K_ps**2
             K_psh = curvedsky.almxfl(num, 1./denom)
             return K_psh
-        
+
         outputs["qfunc_K_psh"] = qfunc_psh
         qfunc_psh_incfilter = lambda X,Y: qfunc_psh(filter_alms_X(X),
                                                   filter_alms_X(Y))
@@ -934,22 +844,24 @@ def setup_recon(px, lmin, lmax, mlmax,
 
 
         def get_fg_trispectrum_K_N0_psh(cl_fg):
-            Ctot = tcls_X['TT']**2 / cl_fg
+            Ctot = cltot**2 / cl_fg
             norm_fg = pytempura.get_norms(
-                ['src'], ucls, {"TT" : Ctot},
+                ['src'], ucls, ucls, {"TT" : Ctot},
                 lmin, lmax, k_ellmax=mlmax,
                 profile=profile)['src']
             norm_ps_fg = pytempura.get_norms(
-                ['src'], ucls, {'TT':Ctot},
+                ['src'], ucls, ucls, {'TT':Ctot},
                 lmin, lmax,
                 k_ellmax=mlmax)['src']
             print("norm_ps_fg.shape:",norm_ps_fg.shape)
             R_K_ps_fg = (1./pytempura.get_norms(
-                ['src'], ucls, {'TT':Ctot},
+                ['src'], ucls, ucls, {'TT':Ctot},
                 lmin, lmax, k_ellmax=mlmax,
                 profile = profile**0.5)['src'])
             R_K_ps_fg[0] = 0.
             N0 = N0_K**2/norm_fg
+            if divide_by_2uL:
+                N0 *= (2*profile)**2
             N0_ps = norm_ps**2/norm_ps_fg
             N0_tri = (N0 + R_K_ps**2 * norm_K**2 * N0_ps
                       - 2 * R_K_ps * norm_K**2 * norm_ps * R_K_ps_fg)
@@ -957,84 +869,5 @@ def setup_recon(px, lmin, lmax, mlmax,
             return N0_tri
         outputs["get_fg_trispectrum_K_N0_psh"] = get_fg_trispectrum_K_N0_psh
 
-        return outputs
+    return outputs
 
-    
-        assert prep_map_config['disable_noise']
-        def get_sim_alm(seed, add_kszr=True,
-                        add_cmb=True,
-                        cl_fg_func=None,
-                        lensed_cmb=True):
-            print("calling get_sim_alm with")
-            print("add_kszr:",add_kszr)
-            print("add_cmb:",add_cmb)
-            print("lensed_cmb:",lensed_cmb)
-            if cl_fg_func is not None:
-                print("adding Gaussian fgs")
-            #generate alms
-            #seed has form (icov, iset, inoise)
-            #we just need one number - the following
-            #should ensure we get unique realizations
-            #for rdn0
-            ksz2_seed = seed[1]*9999 + seed[2]
-            if add_kszr:
-                sim_alms = curvedsky.rand_alm(cl_smooth,
-                                              seed=ksz2_seed)
-            else:
-                sim_alms = np.zeros(hp.Alm.getsize(mlmax),
-                                    dtype=np.complex128)
-
-            s_i,s_set,noise_seed = solenspipe.convert_seeds(seed)
-            if add_cmb:
-                if lensed_cmb:
-                    cmb_alms = solenspipe.get_cmb_alm(s_i, s_set)[0]
-                else:
-                    cmb_alms = get_cmb_alm_unlensed(s_i, s_set)[0]
-                cmb_alms = futils.change_alm_lmax(cmb_alms.astype(np.complex128), mlmax)
-                sim_alms += cmb_alms
-
-            if cl_fg_func is not None:
-                print("adding Gaussian foreground power:")
-                cl_fg = cl_fg_func(np.arange(mlmax+1))
-                print(cl_fg)
-                fg_alms = curvedsky.rand_alm(
-                    cl_fg, seed=ksz2_seed)
-                sim_alms += fg_alms
-
-            #filter and return
-            return filter_alms(sim_alms)
-
-        outputs["get_sim_alm"] = get_sim_alm
-        
-        recon_stuff = {"shape" : shape,
-                       "wcs" : wcs,
-                       "norm_prof" : norm_prof,
-                       "norm_K" : norm_K,
-                       "ucls" : ucls,
-                       "tcls" : tcls,
-                       "qfunc_Ksf_nonorm" : qfunc_Ksf_nonorm,
-                       "qfunc_K" : qfunc_K,
-                       "qfunc_lh_sf" : qfunc_lh,
-                       "qfunc_lh_normed" : qfunc_lh_normed,
-                       "qfunc_psh_sf" : qfunc_psh,
-                       "qfunc_psh_normed" : qfunc_psh_normed,
-                       "qfunc_lens" : qfunc_lens,
-                       "filter_alms" : filter_alms,
-                       "get_sim_alm" : get_sim_alm,
-                       "cl_total":cl_total,
-                       "cl_kszr": cl_smooth,
-                       "cl_total_cmb": cl_total_cmb,
-                       "profile": profile,
-                       "norm_ps": norm_ps,
-                       "norm_lens" : norm_lens,
-                       "R_prof_ps" : R_prof_ps,
-                       "R_prof_tt" : R_prof_tt,
-                       "N0_K_normed" : N0_K_normed,
-                       "N0_K_nonorm" : N0_K_nonorm,
-                       "N0_K_lh_normed" : N0_K_lh_normed,
-                       "N0_K_lh_nonorm" : N0_K_lh_nonorm,
-                       "N0_K_psh_normed" : N0_K_psh_normed,
-                       "N0_K_psh_nonorm" : N0_K_psh_nonorm,
-            }
-
-        return recon_stuff
