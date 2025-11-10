@@ -16,5 +16,5 @@ As well as "lensing-hardened" estimators (see MacCrann et al. 2024), we provide 
 
 ## How to use
 
-- The notebook `examples/test_simple` goes through the basic usage - applying the estimator to a simulated map and subtracting $N^0$. - 
+- The notebook `examples/test_simple` goes through the basic usage - applying the estimator to a simulated map and subtracting $N^0$.
 - The notebooks `examples/test_signal_and_N0.ipynb` and `examples/test_bias-hardening.ipynb` go through more complex usage, more general estimators and bias-hardening respectively. 
