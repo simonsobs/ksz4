@@ -53,9 +53,12 @@ class ClBinner(object):
                 np.log(lmin), np.log(lmax), nbin+1)
             #need to make this integers
             bin_lims = np.ceil(np.exp(log_bin_lims))
-            log_bin_lims = np.log(bin_lims)
+            #remove duplicates
+            bin_lims = np.unique(bin_lims).astype(int)
+            self.bin_lims = bin_lims
+            self.nbin=len(self.bin_lims)-1
+            log_bin_lims = np.log(self.bin_lims)
             log_bin_mids = 0.5*(log_bin_lims[:-1]+log_bin_lims[1:])
-            self.bin_lims = np.exp(log_bin_lims).astype(int)
             self.bin_mids = np.exp(log_bin_mids)
         else:
             self.bin_lims = np.ceil(np.linspace(
@@ -65,6 +68,16 @@ class ClBinner(object):
                                  +self.bin_lims[1:])
         self.deltal = np.diff(self.bin_lims)
         
+    def bin_errorbars(self, sigmas):
+        #Var(binned_cl) = \sum_{L1 < L < L2} w_L^2 sigma_L^2 / (\sum_{L1 < L < L2} w_L^2)
+        L = np.arange(len(sigmas)).astype(int)
+        var_binned_cl = np.zeros(self.nbin)
+        w = 2*L+1
+        for i in range(self.nbin):
+            use = (L>=self.bin_lims[i])*(L<self.bin_lims[i+1])
+            var_binned_cl[i] = (w[use]**2 * sigmas[use]**2).sum() / (w[use]**2).sum()
+        return np.sqrt(var_binned_cl)
+    
     def __call__(self, cl):
         L = np.arange(len(cl)).astype(int)
         w = 2*L+1
