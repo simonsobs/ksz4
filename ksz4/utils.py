@@ -75,7 +75,7 @@ class ClBinner(object):
         w = 2*L+1
         for i in range(self.nbin):
             use = (L>=self.bin_lims[i])*(L<self.bin_lims[i+1])
-            var_binned_cl[i] = (w[use]**2 * sigmas[use]**2).sum() / (w[use]**2).sum()
+            var_binned_cl[i] = (w[use]**2 * sigmas[use]**2).sum() / (w[use].sum())**2
         return np.sqrt(var_binned_cl)
     
     def __call__(self, cl):
