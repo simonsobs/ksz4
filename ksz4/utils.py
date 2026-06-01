@@ -69,7 +69,7 @@ class ClBinner(object):
         self.deltal = np.diff(self.bin_lims)
         
     def bin_errorbars(self, sigmas):
-        #Var(binned_cl) = \sum_{L1 < L < L2} w_L^2 sigma_L^2 / (\sum_{L1 < L < L2} w_L^2)
+        #Var(binned_cl) = \sum_{L1 < L < L2} w_L^2 sigma_L^2 / (\sum_{L1 < L < L2} w_L)^2
         L = np.arange(len(sigmas)).astype(int)
         var_binned_cl = np.zeros(self.nbin)
         w = 2*L+1
