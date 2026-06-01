@@ -4,7 +4,7 @@ from orphics import mpi
 from pixell import utils
 from pixell.mpi import FakeCommunicator
 
-def mcrdn0(icov, get_kmap, power, nsims, qfunc1,get_kmap1=None, qfunc2=None, Xdat=None,Xdat1=None, use_mpi=True, 
+def mcrdn0(icov, get_kmap, power, nsims, qfunc1, get_kmap2=None, qfunc2=None, Xdat=None, Xdat2=None, use_mpi=True, 
          verbose=True, skip_rd=False):
          
     """
@@ -22,7 +22,7 @@ def mcrdn0(icov, get_kmap, power, nsims, qfunc1,get_kmap1=None, qfunc2=None, Xda
         The index of the realization passed to get_kmap if performing 
     a covariance calculation - otherwise, set to zero.
     get_kmap: function
-        Function for getting the filtered a_lms of  data and simulation
+        Function for getting the filtered a_lms of data and simulation
     maps. See notes at top of module.
     power: function
         Returns C(l) from two maps x,y, as power(x,y). 
@@ -65,8 +65,8 @@ def mcrdn0(icov, get_kmap, power, nsims, qfunc1,get_kmap1=None, qfunc2=None, Xda
     mcn0evals = []
     if not(skip_rd): 
         assert Xdat is not None # Data
-        if Xdat1 is None:
-            Xdat1=Xdat
+        if Xdat2 is None:
+            Xdat2=Xdat
         rdn0evals = []
 
     if use_mpi:
@@ -79,28 +79,28 @@ def mcrdn0(icov, get_kmap, power, nsims, qfunc1,get_kmap1=None, qfunc2=None, Xda
         if rank==0 and verbose: print("MCRDN0: Rank %d doing task %d" % (rank,i))
         Xs  = get_kmap(2*i)
         Xsp = get_kmap(2*i+1)
-        if get_kmap1 is None:
-            Xs1=Xs
+        if get_kmap2 is None:
+            Xs2=Xs
         else:
-            Xs1=get_kmap1((i))
+            Xs2=get_kmap2((i))
         if not(skip_rd): 
             qaXXs = qa(Xdat,Xs) #for the two split case, one would need two get_kmaps?, or instead returns an array of maps, [i] for split i
-            qbXXs = qb(Xdat1,Xs1) if qb is not None else qaXXs #this is split 2
+            qbXXs = qb(Xdat2,Xs2) if qb is not None else qaXXs #this is split 2
             qaXsX = qa(Xs,Xdat)  #split 1
-            qbXsX = qb(Xs1,Xdat1) if qb is not None else qaXsX #this is split 2
+            qbXsX = qb(Xs2,Xdat2) if qb is not None else qaXsX #this is split 2
             rdn0_only_term = power(qaXXs,qbXXs) + power(qaXsX,qbXXs) \
                     + power(qaXsX,qbXsX) + power(qaXXs,qbXsX)
-        if get_kmap1 is None:
-            Xsp1=Xsp
+        if get_kmap2 is None:
+            Xsp2=Xsp
         else:
-            Xsp1=get_kmap1((icov,1,i))
+            Xsp2=get_kmap2((icov,1,i))
 
         qaXsXsp = qa(Xs,Xsp) #split1 
-        qbXsXsp = qb(Xs1,Xsp1) if qb is not None else qaXsXsp #split2
+        qbXsXsp = qb(Xs2,Xsp2) if qb is not None else qaXsXsp #split2
 
-        qbXspXs = qb(Xsp1,Xs1) if qb is not None else qa(Xsp,Xs) #this is not present
+        qbXspXs = qb(Xsp2,Xs2) if qb is not None else qa(Xsp,Xs) #this is not present
 
-        mcn0_term = (power(qaXsXsp,qbXsXsp) + power(qaXsXsp,qbXspXs))
+        mcn0_term = (power(qaXsXsp, qbXsXsp) + power(qaXsXsp, qbXspXs))
         mcn0evals.append(mcn0_term.copy())
         if not(skip_rd):  rdn0evals.append(rdn0_only_term - mcn0_term)
 
@@ -271,6 +271,9 @@ def mcrdn0_s4(nsims, power, qfunc_AB, split_K_func,
 
     """
     get_sim_alms_<X> return list of alms, 1 for each split
+    For K, this has just been filtered temperature alms. What about for 
+    K x phi? Well, we should return filtered (T,E,B), and one of the 
+    qfuncs should know how to operate on this and return an MV phi. 
     """
     
     if qfunc_CD is None:
@@ -319,12 +322,6 @@ def mcrdn0_s4(nsims, power, qfunc_AB, split_K_func,
         sim_alms_A, sim_alms_B, sim_alms_C, sim_alms_D = get_sim_alms(2*i)
         sim_alms_Ap, sim_alms_Bp, sim_alms_Cp, sim_alms_Dp = get_sim_alms(2*i+1)
         
-        #Xs0  = get_kmap((icov,0,i))
-        #Xs1= get_kmap1((icov,0,i))
-        #Xs2= get_kmap2((icov,0,i))
-        #Xs3= get_kmap3((icov,0,i))
-
-
         if not(skip_rd):
             #replaces qaXXs
             if verbose:
@@ -345,13 +342,6 @@ def mcrdn0_s4(nsims, power, qfunc_AB, split_K_func,
                                 sim_alms_C[0], sim_alms_C[1], sim_alms_C[2], sim_alms_C[3],
                                 data_split_alms_D[0], data_split_alms_D[1], data_split_alms_D[2], data_split_alms_D[3])
 
-            #qaXXs = split_K_func(Xdat,Xdat1,Xdat2,Xdat3,Xs,Xs1,Xs2,Xs3,qfunc1) #for the two split case, one would need two get_kmaps?, or instead returns an array of maps, [i] for split i
-            #qbXXs = split_K_func(Xdat,Xdat1,Xdat2,Xdat3,Xs,Xs1,Xs2,Xs3,qfunc2) if qfunc2 is not None else qaXXs 
-            #qaXsX = split_K_func(Xs,Xs1,Xs2,Xs3,Xdat,Xdat1,Xdat2,Xdat3,qfunc1) 
-            #qbXsX = split_K_func(Xs,Xs1,Xs2,Xs3,Xdat,Xdat1,Xdat2,Xdat3,qfunc2) if qfunc2 is not None else qaXsX
-            
-            #rdn0_only_term = power(qABs, qCDs)+ power(qABs, qCsD) + power(qAsB, qCDs) \
-            #        + power(qAsB, qCsD)
             rdn0_only_term = power(qABs, qCDs) + power(qAsB, qCDs) + power(qAsB, qCsD) + power(qABs, qCsD)
             
         if verbose:
@@ -370,10 +360,6 @@ def mcrdn0_s4(nsims, power, qfunc_AB, split_K_func,
                               sim_alms_Cp[0], sim_alms_Cp[1], sim_alms_Cp[2], sim_alms_Cp[3],
                               sim_alms_D[0], sim_alms_D[1], sim_alms_D[2], sim_alms_D[3])
         
-        #qaXsXsp = split_K_func(Xs,Xs1,Xs2,Xs3,Xsp,Xsp1,Xsp2,Xsp3,qfunc1)
-        #qbXsXsp = split_K_func(Xs,Xs1,Xs2,Xs3,Xsp,Xsp1,Xsp2,Xsp3,qfunc2)
-        #qbXspXs = split_K_func(Xsp,Xsp1,Xsp2,Xsp3,Xs,Xs1,Xs2,Xs3,qfunc2)
-        #mcn0_term = (power(qaXsXsp,qbXsXsp) + power(qaXsXsp,qbXspXs))
         mcn0_term = (power(qAsBsp, qCsDsp) + power(qAsBsp, qCspDs))
 
         mcn0evals.append(mcn0_term.copy())
