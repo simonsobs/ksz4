@@ -1,11 +1,11 @@
 import numpy as np
 import healpy as hp
 import pytempura
-from pytempura import norm_general, noise_spec
+from pytempura import norm_general, noise_spec, norm_src
 import os
 from falafel import utils as futils, qe
 from orphics import maps
-from pixell import lensing, curvedsky
+from pixell import lensing, curvedsky, enmap
 import matplotlib.pyplot as plt
 from os.path import join as opj
 import pickle
@@ -20,7 +20,50 @@ try:
 except KeyError:
     SEHGAL_DIR="/global/project/projectdirs/act/data/maccrann/sehgal"
 
+def qe_K(px, mlmax, Lmax, filter_num, fTalm, xfTalm=None):
+    """Unnormalised K estimator, abandoning the confusing factors 
+    in Sailer et al.'s profile estimator. Here we just 
+    have 
+    K_L = \\int d^2l/2pi W_l W_{L-l} fT_l fT{L-l}
+    where fT is the (C_l^tot)^-1 filtered temperature
 
+    Args:
+        px (object): pixelization object
+        mlmax (int): maximum ell to perform alm2map transforms
+        filter_num (narray): profile of reconstructed source in ell space. 
+        fTalm (narray): inverse filtered temperature map
+        xfTalm (narray, optional): inverse filtered temperature map. Defaults to None
+        
+    Returns:
+        narray:  profile reconstruction
+    """
+    print(filter_num.shape)
+    print(fTalm.shape)
+    print(hp.Alm.getlmax(len(fTalm)))
+    fTalm = curvedsky.almxfl(fTalm, filter_num)
+    rmap1 = px.alm2map(fTalm,spin=0,ncomp=1,mlmax=mlmax)[0]
+    #If we don't provide a second map,
+    #copy the first (which is already filtered)
+    if xfTalm is None:
+        xfTalm = fTalm.copy()
+        rmap2 = rmap1.copy()
+    else:
+        #otherwise, we still need to filter
+        #the second map
+        xfTalm = curvedsky.almxfl(xfTalm, filter_num)
+        rmap2 = px.alm2map(xfTalm,spin=0,ncomp=1,mlmax=mlmax)[0]
+
+    #multiply the two fields together
+    prodmap=rmap1*rmap2
+    if not(px.hpix): prodmap=enmap.enmap(prodmap,px.wcs) #spin +0 real space  field
+    res=px.map2alm_spin(prodmap,Lmax,0,0)
+    print(len(res),len(res[0]))
+    salm = 0.5*res[0] #factor 1/2 (folliowing convention for denominator of source estimator)
+    #salm=curvedsky.almxfl(salm,1./filter_num[:Lmax+1])
+    #spin 0 salm 
+    return salm  
+
+    
 def filter_T(T_alm, cltot, lmin, lmax):
     """                                                                                                                                                                                                    
     filter by 1/cltot within lmin<=l<=lmax                                                                                                                                                                 
@@ -52,7 +95,7 @@ def norm_qtt_asym(est,lmax,glmin,glmax,llmin,llmax,
             rlmax, TT, OCTG/(profile[:glmax+1]**2),
             OCTL/(profile[:llmax+1]**2), 
             gtype=gtype)
-        return (norm[0]*profile**2, norm[1]*profile**2)
+        return (norm[0], norm[1])
     else:
         return norm_general.qtt_asym(
             est,lmax,glmin,glmax,llmin,llmax,
@@ -63,17 +106,17 @@ def noise_xtt_asym(est, mlmax, lmin, lmax, wLA, wGB, wLC, wGD,
     if ((est=="srclens")) and (profile is not None):
         return noise_spec.xtt_asym("srclens", mlmax,lmin,lmax,
             wLA, wGB, wLC, wGD,
-            cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])/profile
+            cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])
     elif ((est=="lenssrc")) and (profile is not None):
         return noise_spec.xtt_asym("lenssrc", mlmax,lmin,lmax,
             wLA, wGB, wLC, wGD,
-            cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])/profile 
+            cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])
     
     elif est in ["Ksrc","srcK"]:
         n = noise_spec.qtt_asym(
             "src", mlmax,lmin,lmax,
             wLA, wGB, wLC, wGD,
-            cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])[0]/profile
+            cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])[0]
         assert len(n)==mlmax+1
         return n
     else:
@@ -88,12 +131,12 @@ def norm_xtt_asym(est,lmax,glmin,glmax,llmin,llmax,rlmax,
     if ((est=="lenssrc") and (profile is not None)):
         r = norm_general.xtt_asym(est,lmax,glmin,glmax,llmin,llmax,rlmax,
                                   TT, OCTG/(profile[:llmax+1]), OCTL/(profile[:llmax+1]), gtype=gtype)
-        return r/profile 
+        return r
     
     elif ((est=="srclens") and (profile is not None)):
         r = norm_general.xtt_asym(est,lmax,glmin,glmax,llmin,llmax,rlmax,
                                   TT, OCTG/(profile[:glmax+1]), OCTL/(profile[:glmax+1]), gtype=gtype)
-        return r/profile
+        return r
     
     elif est=="srcK":
         print("!!!!!!!!!!!!!!")
@@ -103,7 +146,7 @@ def norm_xtt_asym(est,lmax,glmin,glmax,llmin,llmax,rlmax,
             "src",lmax,glmin,glmax,llmin,llmax,
             rlmax, TT, OCTG/(profile[:glmax+1]), 
             OCTL/(profile[:glmax+1]),
-            gtype=gtype)[0]*profile)
+            gtype=gtype)[0])
         return 1./inv_r
     
     elif est=="Ksrc":
@@ -111,7 +154,7 @@ def norm_xtt_asym(est,lmax,glmin,glmax,llmin,llmax,rlmax,
             "src",lmax,glmin,glmax,llmin,llmax,
             rlmax, TT, OCTG/(profile[:glmax+1]),
             OCTL/(profile[:glmax+1]),
-            gtype=gtype)[0]*profile)
+            gtype=gtype)[0])
         return 1./inv_r
 
     else:
@@ -146,7 +189,7 @@ def get_N0_matrix_bh(
 
 
 
-def setup_ABCD_recon(px, lmin, lmax, mlmax,
+def setup_ABCD_recon(px, lmin, lmax, mlmax, Lmax,
                       cl_rksz, cltot_A, cltot_B,
                       cltot_C, cltot_D,
                       cltot_AC, cltot_BD,
@@ -216,13 +259,12 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
         cltot_A[:lmax+1])
 
     norm_K_AB = norm_qtt_asym(
-        "src", *norm_args_AB, profile=profile)[0]
-    if divide_by_2uL:
-        norm_K_AB /= 2*profile
+        "src", *norm_args_AB, profile=profile)[0][:Lmax+1]
     norm_phi_AB = norm_qtt_asym(
         "lens", *norm_args_AB)
+    norm_phi_AB = (norm_phi_AB[0][:Lmax+1], norm_phi_AB[1][:Lmax+1])
     norm_src_AB = norm_qtt_asym(
-        "src", *norm_args_AB)[0]
+        "src", *norm_args_AB)[0][:Lmax+1]
 
     outputs["norm_K_AB"] = norm_K_AB
     outputs["norm_phi_AB"] = norm_phi_AB #note this has grad and curl, keep both for now
@@ -233,14 +275,12 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
         cltot_C[:lmax+1])
 
     norm_K_CD = norm_qtt_asym(
-        "src", *norm_args_CD, profile=profile)[0]
-    if divide_by_2uL:
-        norm_K_CD /= 2*profile
-        
+        "src", *norm_args_CD, profile=profile)[0][:Lmax+1]
     norm_phi_CD = norm_qtt_asym(
         "lens", *norm_args_CD)
+    norm_phi_CD = (norm_phi_CD[0][:Lmax+1], norm_phi_CD[1][:Lmax+1])
     norm_src_CD = norm_qtt_asym(
-        "src", *norm_args_CD)[0]
+        "src", *norm_args_CD)[0][:Lmax+1]
     outputs["norm_K_CD"] = norm_K_CD
     outputs["norm_phi_CD"] = norm_phi_CD    
     outputs["norm_src_CD"] = norm_src_CD
@@ -264,7 +304,7 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
     N0_ABCD_K_nonorm = noise_spec.qtt_asym(
         'src', mlmax, lmin, lmax,
          wLK_A, wGK_B, wLK_C, wGK_D,
-         cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])[0]/profile**2
+         cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])[0][:Lmax+1]
     #Normalize the N0
     N0_ABCD_K = N0_ABCD_K_nonorm * norm_K_AB * norm_K_CD
     outputs["N0_ABCD_K"] = N0_ABCD_K
@@ -279,25 +319,26 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
             'lens', mlmax, lmin, lmax,
              wLphi_A, wGphi_B, wLphi_C, wGphi_D,
              cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])
+        N0_ABCD_phi_nonorm = (N0_ABCD_phi_nonorm[0][:Lmax+1], N0_ABCD_phi_nonorm[1][:Lmax+1])
         #Normalize the N0
         N0_ABCD_phi = (N0_ABCD_phi_nonorm[0] * norm_phi_AB[0] * norm_phi_CD[0],
                        N0_ABCD_phi_nonorm[1] * norm_phi_AB[1] * norm_phi_CD[1])
         outputs["N0_ABCD_phi"] = N0_ABCD_phi
         #now the responses
         R_K_phi_AB = norm_xtt_asym(
-            "srclens", *norm_args_AB, profile=profile)
+            "srclens", *norm_args_AB, profile=profile)[:Lmax+1]
         outputs["R_K_phi_AB"] = R_K_phi_AB
         
         R_phi_K_AB = norm_xtt_asym(
-            "lenssrc", *norm_args_AB, profile=profile)
+            "lenssrc", *norm_args_AB, profile=profile)[:Lmax+1]
         outputs["R_phi_K_AB"] = R_phi_K_AB
         
         R_K_phi_CD = norm_xtt_asym(
-            "srclens", *norm_args_CD, profile=profile)
+            "srclens", *norm_args_CD, profile=profile)[:Lmax+1]
         outputs["R_K_phi_CD"] = R_K_phi_CD
         
         R_phi_K_CD = norm_xtt_asym(
-            "lenssrc", *norm_args_CD, profile=profile)
+            "lenssrc", *norm_args_CD, profile=profile)[:Lmax+1]
         outputs["R_phi_K_CD"] = R_phi_K_CD
 
 
@@ -309,22 +350,22 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
         N0_ABCD_src_nonorm = noise_spec.qtt_asym(
             'src', mlmax, lmin, lmax,
             wLs_A, wGs_B, wLs_C, wGs_D,
-            cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])[0]
+            cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])[0][:Lmax+1]
         N0_ABCD_src = N0_ABCD_src_nonorm * norm_src_AB * norm_src_CD
         outputs["N0_ABCD_src"] = N0_ABCD_src
         #now the responses
         R_K_src_AB = norm_xtt_asym(
-            "Ksrc", *norm_args_AB, profile=profile)
+            "Ksrc", *norm_args_AB, profile=profile)[:Lmax+1]
         outputs["R_K_src_AB"] = R_K_src_AB
         R_src_K_AB = norm_xtt_asym(
-            "srcK", *norm_args_AB, profile=profile)
+            "srcK", *norm_args_AB, profile=profile)[:Lmax+1]
         outputs["R_src_K_AB"] = R_src_K_AB
         
         R_K_src_CD = norm_xtt_asym(
-            "Ksrc", *norm_args_CD, profile=profile)
+            "Ksrc", *norm_args_CD, profile=profile)[:Lmax+1]
         outputs["R_K_src_CD"] = R_K_src_CD
         R_src_K_CD = norm_xtt_asym(
-            "srcK", *norm_args_CD, profile=profile)
+            "srcK", *norm_args_CD, profile=profile)[:Lmax+1]
         outputs["R_src_K_CD"] = R_src_K_CD
         
     
@@ -336,9 +377,9 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
             "src", mlmax,lmin,lmax,
             wLK_A, wGK_B, wLK_C, wGK_D,
             clfg_AC[:lmax+1], clfg_BD[:lmax+1],
-            clfg_AD[:lmax+1], clfg_BC[:lmax+1])[0]
+            clfg_AD[:lmax+1], clfg_BC[:lmax+1])[0][:Lmax+1]
         print(N0_tri_ABCD_prof_nonorm.shape)
-        N0_tri_ABCD_prof_nonorm /= profile**2
+        N0_tri_ABCD_prof_nonorm
         N0_tri_ABCD_prof = (
             N0_tri_ABCD_prof_nonorm
             *norm_K_AB*norm_K_CD)
@@ -350,9 +391,12 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
     #Now the qfuncs
     print("getting AB and CD qfuncs for qe")
     def qfunc_K_AB(A_filtered, B_filtered):
-        K_nonorm = qe.qe_source(
-            px, mlmax, A_filtered,
-            xfTalm=B_filtered, profile=profile)
+        K_nonorm = qe_K(px, mlmax, Lmax, 
+                        profile, A_filtered, 
+                        xfTalm=B_filtered)
+        #K_nonorm = qe.qe_source(
+        #    xfTalm=B_filtered, profile=profile)
+        #    px, mlmax, A_filtered,
         #and normalize
         #if divide_by_2uL:
         #    raise ValueError("not yet implemeneted divide_by_2uL")
@@ -362,9 +406,12 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
         return curvedsky.almxfl(K_nonorm, norm_K_AB)
 
     def qfunc_K_CD(C_filtered, D_filtered):
-        K_nonorm = qe.qe_source(
-            px, mlmax, C_filtered,
-            xfTalm=D_filtered, profile=profile)
+        K_nonorm = qe_K(px, mlmax, Lmax, 
+                        profile, C_filtered, 
+                        xfTalm=D_filtered)
+        #K_nonorm = qe.qe_source(
+        #    xfTalm=D_filtered, profile=profile)
+        #    px, mlmax, C_filtered,
         #and normalize                                                                                                             
         #if divide_by_2uL:
         #    norm = norm_K_CD / 2 / profile
@@ -378,11 +425,11 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
     outputs["qfunc_K_CD_incfilter"] = lambda X,Y: qfunc_K_CD(filter_C(X), filter_D(Y))
 
     def get_inverse_response_matrix(norm_K, norm_phi, R_K_phi, R_phi_K):
-        R = np.ones((mlmax+1, 2, 2))
+        R = np.ones((Lmax+1, 2, 2))
         R[:,0,1] = (norm_K * R_K_phi).copy()
         R[:,1,0] = (norm_phi * R_phi_K).copy()
         R_inv = np.zeros_like(R)
-        for l in range(mlmax+1):
+        for l in range(Lmax+1):
             R_inv[l] = np.linalg.inv(R[l])
         return R_inv
     
@@ -397,6 +444,7 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
                                     fTalm=X_filtered,fEalm=None,fBalm=None,
                                     estimators=['TT'],
                                     xfTalm=Y_filtered,xfEalm=None,xfBalm=None)['TT']
+                phi_nonorm = futils.change_alm_lmax(phi_nonorm, Lmax)
                 return (curvedsky.almxfl(phi_nonorm[0], norm_phi_XY[0]),
                         curvedsky.almxfl(phi_nonorm[1], norm_phi_XY[1]))
 
@@ -428,7 +476,7 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
         N0_ABCD_K_phi_nonorm = noise_spec.xtt_asym(
             "srclens", mlmax,lmin,lmax,
             wLK_A, wGK_B, wLphi_C, wGphi_D,
-            cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])/profile
+            cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])[:Lmax+1]
         N0_ABCD_K_phi = (
             N0_ABCD_K_phi_nonorm
             *norm_K_AB*norm_phi_CD[0])/2  #factor 2 because apparently don't need 1/2 in wGs
@@ -436,7 +484,7 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
         N0_ABCD_phi_K_nonorm = noise_spec.xtt_asym(
             "lenssrc", mlmax,lmin,lmax,
             wLphi_A, wGphi_B, wLK_C, wGK_D,
-            cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])/profile
+            cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])[:Lmax+1]
         N0_ABCD_phi_K = (
             N0_ABCD_phi_K_nonorm
             *norm_phi_AB[0]*norm_K_CD)/2  #factor 2 because apparently don't need 1/2 in wGs
@@ -451,20 +499,20 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
         def get_fg_trispectrum_N0_ABCD_lh(clfg_AC, clfg_BD, clfg_AD, clfg_BC):
 
             N0_tri_ABCD_K = get_fg_trispectrum_N0_ABCD(
-                clfg_AC, clfg_BD, clfg_AD, clfg_BC)
+                clfg_AC, clfg_BD, clfg_AD, clfg_BC)[:Lmax+1]
             
             N0_tri_ABCD_phi_nonorm = noise_spec.qtt_asym(
                 'lens', mlmax, lmin, lmax,
                 wLphi_A, wGphi_B, wLphi_C, wGphi_D,
                 clfg_AC[:lmax+1], clfg_BD[:lmax+1],
                 clfg_AD[:lmax+1], clfg_BC[:lmax+1])
-            N0_tri_ABCD_phi = (N0_tri_ABCD_phi_nonorm[0] * norm_phi_AB[0] * norm_phi_CD[0],
-                               N0_tri_ABCD_phi_nonorm[1] * norm_phi_AB[1] * norm_phi_CD[1])
+            N0_tri_ABCD_phi = (N0_tri_ABCD_phi_nonorm[0][:Lmax+1] * norm_phi_AB[0] * norm_phi_CD[0],
+                               N0_tri_ABCD_phi_nonorm[1][:Lmax+1] * norm_phi_AB[1] * norm_phi_CD[1])
             
             N0_tri_ABCD_K_phi_nonorm = noise_spec.xtt_asym(
                 "srclens", mlmax,lmin,lmax,
                 wLK_A, wGK_B, wLphi_C, wGphi_D,
-                clfg_AC[:lmax+1], clfg_BD[:lmax+1], clfg_AD[:lmax+1], clfg_BC[:lmax+1])/profile
+                clfg_AC[:lmax+1], clfg_BD[:lmax+1], clfg_AD[:lmax+1], clfg_BC[:lmax+1])[:Lmax+1]
             N0_tri_ABCD_K_phi = (
                 N0_tri_ABCD_K_phi_nonorm * norm_K_AB * norm_phi_CD[0]/2 #factor 2 because apparently don't need 1/2 in wGs 
                 )
@@ -472,7 +520,7 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
             N0_tri_ABCD_phi_K_nonorm = noise_spec.xtt_asym(
                 "lenssrc", mlmax,lmin,lmax,
                 wLphi_A, wGphi_B, wLK_C, wGK_D,
-                clfg_AC[:lmax+1], clfg_BD[:lmax+1], clfg_AD[:lmax+1], clfg_BC[:lmax+1])/profile
+                clfg_AC[:lmax+1], clfg_BD[:lmax+1], clfg_AD[:lmax+1], clfg_BC[:lmax+1])[:Lmax+1]
             N0_tri_ABCD_phi_K = (
                 N0_tri_ABCD_phi_K_nonorm
                 *norm_phi_AB[0]*norm_K_CD)/2 #factor 2 because apparently don't need 1/2 in wGs
@@ -527,6 +575,7 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
             def qfunc_src_XY(X_filtered,Y_filtered):
                 src_nonorm = qe.qe_source(px, mlmax,
                                           fTalm=X_filtered, xfTalm=Y_filtered)
+                src_nonorm = utils.change_alm_lmax(src_nonorm, Lmax)
                 return curvedsky.almxfl(src_nonorm, norm_src_XY)
 
             def qfunc_K_XY_psh(X_filtered, Y_filtered):
@@ -559,7 +608,7 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
             "src", mlmax,lmin,lmax,
             wLK_A, wGK_B, wLs_C, wGs_D,
             cltot_AC[:lmax+1], cltot_BD[:lmax+1],
-            cltot_AD[:lmax+1], cltot_BC[:lmax+1])[0]/profile
+            cltot_AD[:lmax+1], cltot_BC[:lmax+1])[0][:Lmax+1]
         N0_ABCD_K_src = (
             N0_ABCD_K_src_nonorm
             *norm_K_AB*norm_src_CD)
@@ -569,7 +618,7 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
         N0_ABCD_src_K_nonorm = noise_spec.qtt_asym(
             "src", mlmax,lmin,lmax,
             wLs_A, wGs_B, wLK_C, wGK_D,
-            cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])[0]/profile
+            cltot_AC[:lmax+1], cltot_BD[:lmax+1], cltot_AD[:lmax+1], cltot_BC[:lmax+1])[0][:Lmax+1]
         N0_ABCD_src_K = (
             N0_ABCD_src_K_nonorm
             * norm_src_AB * norm_K_CD)
@@ -584,18 +633,19 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
         def get_fg_trispectrum_N0_ABCD_psh(clfg_AC, clfg_BD, clfg_AD, clfg_BC):
 
             N0_tri_ABCD_K = get_fg_trispectrum_N0_ABCD(
-                clfg_AC, clfg_BD, clfg_AD, clfg_BC)
+                clfg_AC, clfg_BD, clfg_AD, clfg_BC)[:Lmax+1]
             
             N0_tri_ABCD_src_nonorm = noise_spec.qtt_asym(
                 'src', mlmax, lmin, lmax,
                 wLs_A, wGs_B, wLs_C, wGs_D,
-                clfg_AC[:lmax+1], clfg_BD[:lmax+1], clfg_AD[:lmax+1], clfg_BC[:lmax+1])[0]
+                clfg_AC[:lmax+1], clfg_BD[:lmax+1], clfg_AD[:lmax+1], clfg_BC[:lmax+1])[0][:Lmax+1]
+        
             N0_tri_ABCD_src = N0_tri_ABCD_src_nonorm * norm_src_AB * norm_src_CD
             
             N0_tri_ABCD_K_src_nonorm = noise_spec.qtt_asym(
                 "src", mlmax,lmin,lmax,
                 wLK_A, wGK_B, wLs_C, wGs_D,
-                clfg_AC[:lmax+1], clfg_BD[:lmax+1], clfg_AD[:lmax+1], clfg_BC[:lmax+1])[0]/profile
+                clfg_AC[:lmax+1], clfg_BD[:lmax+1], clfg_AD[:lmax+1], clfg_BC[:lmax+1])[0][:Lmax+1]
             N0_tri_ABCD_K_src = (
                 N0_tri_ABCD_K_src_nonorm
                 *norm_K_AB*norm_src_CD)
@@ -603,7 +653,7 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
             N0_tri_ABCD_src_K_nonorm = noise_spec.qtt_asym(
                 "src", mlmax,lmin,lmax,
                 wLs_A, wGs_B, wLK_C, wGK_D,
-                clfg_AC[:lmax+1], clfg_BD[:lmax+1], clfg_AD[:lmax+1], clfg_BC[:lmax+1])[0]/profile
+                clfg_AC[:lmax+1], clfg_BD[:lmax+1], clfg_AD[:lmax+1], clfg_BC[:lmax+1])[0][:Lmax+1]
             N0_tri_ABCD_src_K = (
                 N0_tri_ABCD_src_K_nonorm
                 * norm_src_AB * norm_K_CD)
@@ -621,7 +671,7 @@ def setup_ABCD_recon(px, lmin, lmax, mlmax,
     
 
 def setup_recon_simple(px, lmin, lmax, mlmax,
-                cl_rksz, cltot, do_lh=False,
+                       Lmax, cl_rksz, cltot, do_lh=False,
                 do_psh=False, divide_by_2uL=False):
 
     outputs = {}
@@ -657,11 +707,12 @@ def setup_recon_simple(px, lmin, lmax, mlmax,
         ['src'], ucls, ucls, {"TT" : cltot},
         lmin, lmax, k_ellmax=mlmax,
         profile=profile)['src']
+    norm_K = norm_src.qtt(lmax,lmin,lmax,cltot[:lmax+1]/profile[:lmax+1]**2)[:Lmax+1]
     N0_K = norm_K.copy()
     #norm_K[0]=0.       
-    if divide_by_2uL:
-        norm_K /= 2*profile
-        N0_K /= (2*profile)**2
+    #if divide_by_2uL:
+    #    norm_K /= 2*profile
+    #    N0_K /= (2*profile)**2
     outputs["norm_K"] = norm_K
     outputs["N0_K"] = N0_K
     
@@ -669,8 +720,8 @@ def setup_recon_simple(px, lmin, lmax, mlmax,
     #slightly from our profile estimator, K
     #Ksf = 2*profile*K (both unnormalised)
     #So normalizations should be related via:
-    norm_Ksf = norm_K / 2 / profile
-    outputs["norm_Ksf"] = norm_Ksf
+    #norm_Ksf = norm_K / 2 / profile
+    #outputs["norm_Ksf"] = norm_Ksf
 
     #For the normalized estimator this
     #is also the N0.
@@ -678,18 +729,19 @@ def setup_recon_simple(px, lmin, lmax, mlmax,
     #outputs["N0_K"] = N0_K 
 
     #unnormalized source estimator
-    def qfunc_prof(X, Y):
-        return qe.qe_source(px,mlmax,profile=profile,
-                         fTalm=Y,xfTalm=X)
+    #def qfunc_prof(X, Y):
+    #    return qe.qe_source(px,mlmax,profile=profile,
+    #                     fTalm=Y,xfTalm=X)
 
     #Smith/Ferraro estimator (x 2!)
-    def qfunc_Ksf_nonorm(X,Y):
-        s_nonorm = qfunc_prof(X, Y)
-        K_nonorm = curvedsky.almxfl(s_nonorm, norm_Ksf)
-        return K_nonorm
+    #def qfunc_Ksf_nonorm(X,Y):
+    #    s_nonorm = qfunc_prof(X, Y)
+    #    K_nonorm = curvedsky.almxfl(s_nonorm, norm_Ksf)
+    #    return K_nonorm
 
     def qfunc_K(X,Y):
-        K_nonorm = qfunc_prof(X,Y)
+        K_nonorm = qe_K(px, mlmax, Lmax, profile, X, xfTalm=Y)
+        #K_nonorm = qfunc_prof(X,Y)
         return curvedsky.almxfl(
             K_nonorm, norm_K
             )
@@ -703,19 +755,14 @@ def setup_recon_simple(px, lmin, lmax, mlmax,
         #for the normal estimator, and a bit more complex for
         #the bias hardened case
         Ctot = cltot**2 / cl_fg
-        norm_fg = pytempura.get_norms(
-            ['src'], ucls, ucls, {"TT" : Ctot},
-            lmin, lmax, k_ellmax=mlmax,
-            profile=profile)['src']
+        norm_fg = norm_src.qtt(lmax,lmin,lmax,cltot[:lmax+1]**2/cl_fg/profile[:lmax+1]**2)[:Lmax+1]
+        #norm_fg = pytempura.get_norms(
+        #    ['src'], ucls, ucls, {"TT" : Ctot},
+        #    lmin, lmax, k_ellmax=mlmax,
+        #    profile=profile)['src'][:Lmax+1]
 
         N0_tri = N0_K**2 / norm_fg
-        if divide_by_2uL:
-            #we should just be multiplying this by 1/(2*profile)**2
-            #but we already divided N0_K by 1/(2*profile)**2. So we 
-            #need to multiply by (2*profile)**2 to get the correct thing
-            N0_tri *= (2*profile)**2
-
-        return N0_tri
+        return N0_tri[:Lmax+1]
             
     outputs["get_fg_trispectrum_K_N0"] = get_fg_trispectrum_K_N0
 
